@@ -526,6 +526,18 @@ class CompanionManager(QObject):
         except Exception:
             pass
 
+    def _capture_screens(self):
+        return capture_all_screens()
+
+    def _conversation_history(self, key):
+        return self._app_memory.setdefault(key, [])
+
+    def _build_prompt(self, **kwargs):
+        return _build_system_prompt(**kwargs)
+
+    def _question_intent(self, question):
+        return memory_intent(question)
+
     # ── Provider lazy init ────────────────────────────────────────────────────
 
     def _get_llm(self) -> BaseLLMProvider:
@@ -726,22 +738,21 @@ class CompanionManager(QObject):
         audio_seconds = len(pcm) / 32000.0
 
         self._emit_state(AppState.THINKING)
-        pointing_held = False  # track whether we told overlay to hold dwell
-
         try:
-            # 1. Transcribe — bounded so a hung/downloading STT model can
-            # never freeze the UI on "Thinking..." forever
-            transcript = await asyncio.wait_for(
-                self._get_stt().transcribe(pcm), timeout=90,
-            )
-            _log.info("transcript: %r (provider=%s)",
-                      transcript[:120], cfg.llm_provider())
-            if not transcript.strip():
-                self._emit_state(AppState.IDLE)
-                return
-            if self._memory.settings.audio:
-                self._memory.add(Evidence(time.time(), "audio", transcript[:1500], title=active_window_title()))
+            transcript = await asyncio.wait_for(self._get_stt().transcribe(pcm), timeout=90)
+            if transcript.strip():
+                await self._answer_question(transcript, audio_seconds)
+        except Exception as exc:
+            _log.warning("transcription_failure type=%s", type(exc).__name__)
+            self.sig_error.emit("Local speech recognition failed; check the selected microphone/model.")
+        finally:
+            self._emit_state(AppState.IDLE)
 
+    async def _answer_question(self, transcript, audio_seconds=0):
+        """Shared Clicky orchestration for microphone, typed and hands-free questions."""
+        self._emit_state(AppState.THINKING)
+        pointing_held = False
+        try:
             # ── Voice commands — short-circuit before LLM ──
             if is_stop(transcript):
                 self.stop()
@@ -796,7 +807,7 @@ class CompanionManager(QObject):
 
             # User-created skills (run BEFORE the LLM, like built-ins above)
             try:
-                skill = skills_pkg.match(transcript)
+                skill = skills_pkg.match(transcript) if not getattr(self, "guarded_runtime", False) else None
                 if skill:
                     msg = await skill["handler"](self, transcript)
                     if msg:
@@ -816,7 +827,7 @@ class CompanionManager(QObject):
             sensitive = self._privacy_guard and is_sensitive_window(title)
             identity_q = is_identity_question(transcript)
             memory = await asyncio.to_thread(self._memory.retrieve, transcript)
-            needs_screen, _ = memory_intent(transcript)
+            needs_screen, _ = self._question_intent(transcript)
             if sensitive or identity_q or not needs_screen:
                 screenshots = []
                 images_b64 = []
@@ -824,10 +835,12 @@ class CompanionManager(QObject):
                 screenshots = []  # historical pixels cannot drive current-screen pointing
                 images_b64 = memory.images
             else:
-                screenshots = capture_all_screens()
+                screenshots = self._capture_screens()
                 images_b64 = [s.base64_jpeg for s in screenshots]
                 if not is_locate(transcript):
-                    images_b64 = (memory.images + images_b64)[-3:]
+                    images_b64 = list(dict.fromkeys(memory.images + images_b64))
+                    if len(images_b64) > 3:
+                        images_b64 = [images_b64[0]] + images_b64[-2:]
             # Fresh question → wipe the previous lesson's drawings and remember
             # this turn's screenshots for coordinate mapping.
             self._screens_ctx = screenshots
@@ -893,7 +906,7 @@ class CompanionManager(QObject):
                     async def _ready(pt=_pt):
                         return pt
                     locate_task = asyncio.create_task(_ready())
-                elif _computer_use_available():
+                elif _computer_use_available() and not getattr(self, "guarded_runtime", False):
                     # Path A — Anthropic Computer Use (best accuracy)
                     from ai.element_locator import detect_element
                     locate_task = asyncio.create_task(detect_element(
@@ -986,7 +999,7 @@ class CompanionManager(QObject):
                 doc_extra += pdf_context.format_for_prompt(fname, text)
 
             # 4. Build system prompt with all context
-            system = _build_system_prompt(
+            system = self._build_prompt(
                 window_title=title,
                 lesson_step=self._lesson_step_idx,
                 total_steps=len(self._lesson_steps),
@@ -1008,7 +1021,7 @@ class CompanionManager(QObject):
                 system += build_search_context(search_results)
 
             # Use per-app history so context doesn't bleed between apps
-            history = self._app_memory.setdefault(ak, [])
+            history = self._conversation_history(ak)
 
             # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
             full_response = ""
@@ -1109,7 +1122,7 @@ class CompanionManager(QObject):
             # nothing to go on — issue #15 was reported as a bare
             # "'NoneType' object has no attribute 'write'" with no way to
             # tell which call produced it.
-            _log.exception("request failed: %s", e)
+            _log.warning("request_failure type=%s", type(e).__name__)
             self.sig_error.emit(str(e))
 
         finally:
@@ -1654,14 +1667,14 @@ class CompanionManager(QObject):
             return
         try:
             self._emit_state(AppState.THINKING)
-            screenshots = capture_all_screens()
+            screenshots = self._capture_screens()
             images_b64 = [s.base64_jpeg for s in screenshots]
             title = active_window_title()
             system = _build_system_prompt(
                 window_title=title, quiz_mode=True,
             )
             ak = app_key(title)
-            history = self._app_memory.setdefault(ak, [])
+            history = self._conversation_history(ak)
 
             full = ""
             async for chunk in self._get_llm().stream_response(

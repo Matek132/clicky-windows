@@ -309,7 +309,15 @@ class Config:
         else:
             os.environ.pop(env_var, None)
 
-        self._write_env(env_var, value)
+        import keyring
+        if value:
+            keyring.set_password("MatekClicky", env_var, value)
+        else:
+            try:
+                keyring.delete_password("MatekClicky", env_var)
+            except keyring.errors.PasswordDeleteError:
+                pass
+        self._write_env(env_var, "")
 
     def _write_env(self, key: str, value: str) -> None:
         """Upsert KEY=value in .env, removing the line entirely when cleared."""
@@ -350,6 +358,8 @@ class Config:
         self._write_env("CLICKY_ACTIVE_LLM", "")
 
     def stt_provider(self) -> str:
+        if getattr(self, "matek_guarded", False):
+            return "faster_whisper"
         # Allow explicit override via env (so users can force whisper_cpp etc.)
         forced = os.getenv("CLICKY_STT", "").strip().lower()
         if forced in ("deepgram", "openai", "whisper_cpp", "faster_whisper"):
@@ -367,6 +377,8 @@ class Config:
             return "faster_whisper"
 
     def tts_provider(self) -> str:
+        if getattr(self, "matek_guarded", False):
+            return "windows"
         if self.elevenlabs_api_key:
             return "elevenlabs"
         if self.openai_api_key:
@@ -374,6 +386,8 @@ class Config:
         return "edge_tts"
 
     def search_provider(self) -> str:
+        if getattr(self, "matek_guarded", False):
+            return "duckduckgo"
         if self.tavily_api_key:
             return "tavily"
         return "duckduckgo"

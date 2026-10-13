@@ -105,6 +105,7 @@ class OllamaProvider(BaseLLMProvider):
         # Kept for backward compat with old code paths reading self._model
         self._model = cfg.ollama_model
         self._client = httpx.AsyncClient(
+            trust_env=False,
             timeout=120,
             limits=httpx.Limits(max_keepalive_connections=4, max_connections=8)
         )
@@ -143,7 +144,11 @@ class OllamaProvider(BaseLLMProvider):
                 f"{self._base}/api/show", json={"model": model}, timeout=15,
             )
             if r.status_code == 200:
+                if r.json().get("remote_model") or r.json().get("remote_host"):
+                    raise PermissionError("Ollama model is cloud-hosted; choose installed local weights")
                 caps = list(r.json().get("capabilities") or [])
+        except PermissionError:
+            raise
         except Exception:
             pass
         self._caps_cache[model] = caps
@@ -196,6 +201,8 @@ class OllamaProvider(BaseLLMProvider):
         else:
             chosen = self._pick_model(bool(screenshots_b64))
         chosen = await self._resolve_model(chosen, bool(screenshots_b64))
+        if ":cloud" in chosen.lower():
+            raise PermissionError("Cloud-hosted Ollama models are blocked in local mode")
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -209,7 +216,7 @@ class OllamaProvider(BaseLLMProvider):
         messages.append(user_msg)
 
         options: dict = {
-            "num_predict": 1024,
+            "num_predict": getattr(cfg, "matek_output_tokens", 1024),
             "num_gpu": cfg.ollama_num_gpu,
             "num_ctx": cfg.ollama_num_ctx,
         }

@@ -61,11 +61,12 @@ class OpenAIProvider(BaseLLMProvider):
         # OPENAI_BASE_URL turns this into a generic OpenAI-compatible client:
         # DeepSeek (https://api.deepseek.com), Alibaba DashScope/Qwen,
         # SiliconFlow, OpenRouter, etc. Set OPENAI_DEFAULT_MODEL to match.
-        kwargs = {"api_key": cfg.openai_api_key}
+        kwargs = {"api_key": cfg.openai_api_key, "max_retries": 0}
         if cfg.openai_base_url:
             kwargs["base_url"] = cfg.openai_base_url
         self._client = AsyncOpenAI(**kwargs)
-        self._custom_server = bool(cfg.openai_base_url)
+        from urllib.parse import urlparse
+        self._custom_server = bool(cfg.openai_base_url and urlparse(cfg.openai_base_url).hostname != "api.openai.com")
 
     def _request_kwargs(self, model: str, messages: list) -> dict:
         kwargs: dict = dict(model=model, messages=messages, stream=True)
@@ -132,9 +133,10 @@ class OpenAIProvider(BaseLLMProvider):
         messages.append({"role": "user", "content": content})
 
         kwargs = self._request_kwargs(model, messages)
+        kwargs["stream_options"] = {"include_usage": True}
 
         stream = None
-        for attempt in range(3):
+        for attempt in range(1 if getattr(cfg, "matek_guarded", False) else 3):
             try:
                 stream = await self._client.chat.completions.create(**kwargs)
                 break
@@ -151,6 +153,8 @@ class OpenAIProvider(BaseLLMProvider):
         got_text = False
         finish = None
         async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                self.last_usage = (chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]

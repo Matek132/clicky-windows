@@ -1,5 +1,9 @@
 # Core UI
 PyQt6>=6.6.0
+keyring>=25,<26
+psutil>=6,<8
+PyAudioWPatch>=0.2.12.7,<0.3; sys_platform == 'win32'
+webrtcvad-wheels>=2.0.14,<3
 
 # Screen capture
 mss>=9.0.1

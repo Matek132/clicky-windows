@@ -115,7 +115,7 @@ class GeminiProvider(BaseLLMProvider):
         parts.append({"text": user_text})
         contents.append({"role": "user", "parts": parts})
 
-        candidates = [model] + [m for m in _OVERLOAD_FALLBACKS if m != model]
+        candidates = [model] if getattr(cfg, "matek_guarded", False) else [model] + [m for m in _OVERLOAD_FALLBACKS if m != model]
         for i, candidate in enumerate(candidates):
             try:
                 async for text in self._stream_model(candidate, contents, system_prompt):
@@ -164,7 +164,7 @@ class GeminiProvider(BaseLLMProvider):
 
                         # Overloaded: one short retry, then let the caller fall back.
                         if resp.status_code == 503 or "high demand" in low:
-                            if not overload_retried:
+                            if not overload_retried and not getattr(cfg, "matek_guarded", False):
                                 overload_retried = True
                                 await asyncio.sleep(_OVERLOAD_RETRY_DELAY_S)
                                 continue
@@ -173,7 +173,7 @@ class GeminiProvider(BaseLLMProvider):
                         # Thinking parameters differ between model generations
                         # and I can't enumerate them all — if the server objects
                         # to ours, retry once without rather than fail the question.
-                        if (not thinking_retried and "thinkingConfig" in gen_config
+                        if (not getattr(cfg, "matek_guarded", False) and not thinking_retried and "thinkingConfig" in gen_config
                                 and "thinking" in low):
                             thinking_retried = True
                             del gen_config["thinkingConfig"]

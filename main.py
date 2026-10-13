@@ -48,7 +48,25 @@ from ui.overlay import (
     CursorOverlay, MODE_IDLE, MODE_LISTENING, MODE_THINKING, MODE_SPEAKING
 )
 from hotkey import GlobalHotkeyMonitor, StopHotkey
-from companion_manager import CompanionManager
+from matek.manager import MatekManager as CompanionManager
+from matek.panel import MatekPanel
+
+
+def set_autostart(enabled):
+    if sys.platform != "win32":
+        return
+    import winreg
+    command = f'"{sys.executable}"'
+    if not getattr(sys, "frozen", False):
+        command += f' "{Path(__file__).resolve()}"'
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+        if enabled:
+            winreg.SetValueEx(key, "MatekScreenCompanion", 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(key, "MatekScreenCompanion")
+            except FileNotFoundError:
+                pass
 
 
 STATE_TO_CURSOR_MODE = {
@@ -131,19 +149,37 @@ def _setup_logging():
 
 
 def main():
+    os.chdir(Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent)
+    if "--smoke-test" in sys.argv:
+        import tempfile
+        smoke_directory = tempfile.TemporaryDirectory(prefix="matek-clicky-smoke-")
+        os.environ["LOCALAPPDATA"] = smoke_directory.name
     _setup_logging()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    app.setApplicationName("Clicky")
-    app.setApplicationDisplayName("Clicky - AI Companion")
+    app.setApplicationName("Matek Screen Companion")
+    app.setApplicationDisplayName("Matek Screen Companion · Clicky Windows")
 
     # ── Core components ───────────────────────────────────────────────────────
-    manager = CompanionManager()
-    panel   = CompanionPanel()
+    if "--smoke-test" in sys.argv:
+        from matek.config import Settings
+        manager = CompanionManager(Settings(), runtime=False)
+    else:
+        manager = CompanionManager()
+    panel   = MatekPanel(manager)
     overlay = CursorOverlay()
+    def cursor_preferences():
+        overlay.setVisible(manager.settings.cursor_mode)
+        if manager.settings.cursor_mode:
+            overlay._tick_timer.start(66 if manager.settings.preset == "gaming" else 33)
+        else:
+            overlay._tick_timer.stop()
+        if "--smoke-test" not in sys.argv:
+            set_autostart(manager.settings.start_with_windows)
+    panel.settings_applied.connect(cursor_preferences)
     tray    = TrayManager()
 
     # ── Wire signals ──────────────────────────────────────────────────────────
@@ -165,6 +201,14 @@ def main():
 
     # Pointing directives
     manager.sig_point_at.connect(overlay.point_at)
+    def show_point_overlay(*args):
+        from PyQt6.QtCore import QTimer
+        overlay.show()
+        overlay._tick_timer.start(33)
+        if not manager.settings.cursor_mode:
+            QTimer.singleShot(15000, cursor_preferences)
+    manager.sig_point_at.connect(show_point_overlay)
+    manager.sig_draw.connect(show_point_overlay)
     manager.sig_point_hold.connect(overlay.set_point_hold)
     manager.sig_point_release.connect(overlay.release_point)
 
@@ -371,8 +415,7 @@ def main():
     tray.on_api_keys.connect(_open_api_keys)
 
     def _open_memory():
-        from ui.memory_dialog import MemoryDialog
-        MemoryDialog(manager._memory).exec()
+        panel.settings()
     tray.on_memory_settings.connect(_open_memory)
 
     def _save_diagnostics():
@@ -433,20 +476,22 @@ def main():
     # Esc = cancel current generation (kills Ollama ramble mid-stream)
     stop_key = StopHotkey(on_stop=manager.stop, key="esc")
     stop_key.start()
+    import keyboard
+    keyboard.add_hotkey("ctrl+alt+p", manager.pause)
+    keyboard.add_hotkey("ctrl+alt+o", panel.show)
 
     # ── Show UI + start listener ──────────────────────────────────────────────
-    overlay.show()        # persistent overlay (cursor follow)
+    cursor_preferences()
+    if not manager.settings.launch_minimized:
+        panel.show()
     # Panel is hidden by default — user can open it from the tray menu if needed
     manager.start()        # begin ambient mic + wake-word scanning
 
     providers = cfg.describe()
     _hk = "+".join(p.strip().capitalize() for p in cfg.hotkey.split("+"))
     tray.show_notification(
-        "Clicky is running",
-        (f"Say 'Clicky' or press {_hk}  |  LLM: {providers['llm']}"
-         if cfg.ambient_mic() else
-         f"Press {_hk}, ask your question, and Clicky answers when you stop "
-         f"talking  |  LLM: {providers['llm']}"),
+        "Matek Screen Companion is running",
+        f"Clicky-based · {_hk} or enabled hands-free mode · offline Windows voice",
     )
 
     # ── First-run setup wizard ────────────────────────────────────────────────
@@ -460,14 +505,21 @@ def main():
             wiz = SetupWizard()
             wiz.show()
             _setup_keepalive[0] = wiz
-        else:
+        elif not hasattr(manager, "guarded_runtime"):
             wiz = maybe_show_setup_wizard()
             if wiz is not None:
                 _setup_keepalive[0] = wiz   # keep a reference so it isn't GC'd
     except Exception as e:
         print(f"[setup-wizard] skipped: {e}")
 
-    sys.exit(app.exec())
+    if "--smoke-test" in sys.argv:
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(1200, lambda: (tray.hide_icon(), manager.shutdown(), app.quit()))
+    result = app.exec()
+    if "--smoke-test" in sys.argv and "--output" in sys.argv:
+        import json
+        Path(sys.argv[sys.argv.index("--output") + 1]).write_text(json.dumps({"smoke_exit": result, "frontend": "Clicky PyQt6", "manager": type(manager).__name__}), encoding="utf-8")
+    sys.exit(result)
 
 
 # Module-level slots keeping references to the setup wizard [0] and the API

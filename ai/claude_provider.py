@@ -49,7 +49,7 @@ def _friendly_error(e: Exception, model: str) -> str | None:
 class ClaudeProvider(BaseLLMProvider):
 
     def __init__(self, client=None):
-        self._client = client or anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key)
+        self._client = client or anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key, max_retries=0)
 
     async def stream_response(
         self,
@@ -101,13 +101,14 @@ class ClaudeProvider(BaseLLMProvider):
 
         got_text = False
         stop_reason = None
-        for attempt in range(2):
+        for attempt in range(1 if getattr(cfg, "matek_guarded", False) else 2):
             try:
                 async with self._client.messages.stream(**kwargs) as stream:
                     async for text in stream.text_stream:
                         got_text = True
                         yield text
                     final = await stream.get_final_message()
+                    self.last_usage = (final.usage.input_tokens, final.usage.output_tokens)
                     stop_reason = final.stop_reason
                 break
             except anthropic.BadRequestError as e:
