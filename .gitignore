@@ -16,6 +16,11 @@ build/
 dist/
 *.spec.bak
 
+# Local downloaded models and verification reports
+models/
+artifacts/
+artifacts-build.log
+
 # Generated icon (rebuildable from assets/make_icon.py)
 assets/icon.ico
 

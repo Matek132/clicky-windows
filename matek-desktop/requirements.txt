@@ -1,0 +1,13 @@
+PySide6>=6.8,<7
+mss>=10,<11
+Pillow>=11,<13
+numpy>=1.26,<3
+httpx>=0.28,<1
+keyring>=25,<26
+psutil>=6,<8
+PyAudioWPatch>=0.2.12.7,<0.3; sys_platform == 'win32'
+webrtcvad-wheels>=2.0.14,<3
+faster-whisper>=1.1,<2
+pytesseract>=0.3.13,<0.4
+pytest>=8,<10
+pyinstaller>=6.12,<7

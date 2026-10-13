@@ -15,7 +15,7 @@ We use --onedir (not --onefile) because:
   • Inno Setup bundles the folder into a single Setup.exe anyway.
 """
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 # ── Modules that are lazy-imported by CompanionManager — PyInstaller's
 #    static analysis misses them, so we list them explicitly.
@@ -96,7 +96,10 @@ for pkg in (
         pass  # package not installed — that path is optional anyway
 
 hiddenimports += hidden
-hiddenimports += collect_submodules("PyQt6")
+hiddenimports += ["PyQt6.QtTextToSpeech", "PyQt6.QtSvg", "PyQt6.QtOpenGL", "PyQt6.QtOpenGLWidgets",
+                  "keyring.backends.Windows", "pyaudiowpatch", "webrtcvad", "pytesseract", "psutil"]
+datas += copy_metadata("webrtcvad-wheels")
+datas += [("config/pricing.json", "config"), ("knowledge", "knowledge"), ("LICENSE", ".")]
 
 
 a = Analysis(
@@ -105,12 +108,12 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=["scripts/hooks"],
     hooksconfig={},
     runtime_hooks=[],
     # Shave size: Clicky never uses these heavy libs.
     excludes=[
-        "matplotlib", "scipy", "pandas", "tkinter",
+        "PySide6", "PyQt5", "matplotlib", "scipy", "pandas", "tkinter",
         "notebook", "jupyter", "IPython",
         "torch.distributions", "torch.onnx",
     ],
@@ -124,7 +127,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Clicky",
+    name="MatekScreenCompanion",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -145,5 +148,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Clicky",
+    name="MatekScreenCompanion",
 )

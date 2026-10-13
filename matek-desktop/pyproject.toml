@@ -1,0 +1,9 @@
+[project]
+name = "matek-screen-companion"
+version = "0.3.0"
+requires-python = ">=3.11,<3.14"
+description = "Local perception and explicitly authorized desktop reasoning"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

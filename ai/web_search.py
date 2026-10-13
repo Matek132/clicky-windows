@@ -42,7 +42,7 @@ async def search(query: str, max_results: int = MAX_PAGES) -> str:
     if not query:
         return ""
 
-    if cfg.search_provider() == "tavily":
+    if cfg.search_provider() == "tavily" and not getattr(cfg, "matek_guarded", False):
         try:
             return await _tavily(query, max_results)
         except Exception:
