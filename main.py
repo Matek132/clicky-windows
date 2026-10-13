@@ -370,6 +370,11 @@ def main():
         _setup_keepalive[1] = dlg   # keep a reference so Qt doesn't GC it
     tray.on_api_keys.connect(_open_api_keys)
 
+    def _open_memory():
+        from ui.memory_dialog import MemoryDialog
+        MemoryDialog(manager._memory).exec()
+    tray.on_memory_settings.connect(_open_memory)
+
     def _save_diagnostics():
         import datetime, json, platform, traceback
         from ai import ollama_bootstrap as ob

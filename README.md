@@ -1,5 +1,7 @@
 # Clicky for Windows 🔵
 
+Matek fork: optional local Screenpipe memory is available under **Tray → Setup & Diagnostics → Local memory / Screenpipe**. It defaults off, preserves Clicky's conversational UI/providers, and includes a bounded two-minute RAM fallback. See [setup, privacy, licence review and benchmark limitations](docs/SCREENPIPE.md).
+
 > **An AI teaching companion that lives next to your cursor.**
 > Ask it anything about your screen — it points, explains, and guides you step-by-step, like a real tutor sitting beside you.
 

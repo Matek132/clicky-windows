@@ -19,6 +19,7 @@ from typing import List, Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import cfg
+from memory_backend import LocalMemory, Evidence, intent as memory_intent
 from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
 from screen.capture import capture_all_screens
@@ -290,6 +291,7 @@ class CompanionManager(QObject):
         self._history: List[Message] = []
         self._current_model: Optional[str] = None
         self._web_search_enabled = True
+        self._memory = LocalMemory()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
@@ -377,6 +379,7 @@ class CompanionManager(QObject):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self):
+        self._memory.start(capture_all_screens, active_window_title)
         try:
             self._listener.start()
         except Exception as e:
@@ -398,6 +401,7 @@ class CompanionManager(QObject):
             pass   # silent — not user-facing on startup
 
     def shutdown(self):
+        self._memory.close()
         # Kill any audio that was playing when the user clicked Quit
         try:
             from audio.playback import stop_audio
@@ -735,6 +739,8 @@ class CompanionManager(QObject):
             if not transcript.strip():
                 self._emit_state(AppState.IDLE)
                 return
+            if self._memory.settings.audio:
+                self._memory.add(Evidence(time.time(), "audio", transcript[:1500], title=active_window_title()))
 
             # ── Voice commands — short-circuit before LLM ──
             if is_stop(transcript):
@@ -809,12 +815,19 @@ class CompanionManager(QObject):
             # actually wants when they ask "who is MrBeast" while on YouTube.
             sensitive = self._privacy_guard and is_sensitive_window(title)
             identity_q = is_identity_question(transcript)
-            if sensitive or identity_q:
+            memory = await asyncio.to_thread(self._memory.retrieve, transcript)
+            needs_screen, _ = memory_intent(transcript)
+            if sensitive or identity_q or not needs_screen:
                 screenshots = []
                 images_b64 = []
+            elif memory.backend == "screenpipe" and not is_locate(transcript):
+                screenshots = []  # historical pixels cannot drive current-screen pointing
+                images_b64 = memory.images
             else:
                 screenshots = capture_all_screens()
                 images_b64 = [s.base64_jpeg for s in screenshots]
+                if not is_locate(transcript):
+                    images_b64 = (memory.images + images_b64)[-3:]
             # Fresh question → wipe the previous lesson's drawings and remember
             # this turn's screenshots for coordinate mapping.
             self._screens_ctx = screenshots
@@ -981,7 +994,7 @@ class CompanionManager(QObject):
                 detected_coord=detected_coord,
                 code_active=code_active,
                 language_code=lang_code,
-                extra=ocr_extra + doc_extra + fig_extra,
+                extra=ocr_extra + doc_extra + fig_extra + "\n" + memory.prompt(),
             )
             if sensitive:
                 system += (
