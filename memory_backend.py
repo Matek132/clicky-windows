@@ -120,10 +120,11 @@ class MemoryResult:
 
 
 class LocalMemory:
-    def __init__(self, settings=None, transport=None, clock=time.time):
+    def __init__(self, settings=None, transport=None, clock=time.time, token_factory=None):
         self.settings = settings or MemorySettings.from_env()
         self.settings.validate()
         self.transport, self.clock = transport, clock
+        self.token_factory = token_factory
         self.rows = deque(maxlen=100)
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
@@ -137,7 +138,7 @@ class LocalMemory:
 
     def request(self, path, params=None, payload=None):
         # Token is never put in settings, URLs, logs or prompt text.
-        token = os.getenv("SCREENPIPE_LOCAL_API_KEY", "")
+        token = self.token_factory() if self.token_factory else os.getenv("SCREENPIPE_LOCAL_API_KEY", "")
         if not token:
             raise RuntimeError("Set SCREENPIPE_LOCAL_API_KEY to enable authenticated local memory")
         headers = {"Authorization": "Bearer " + token, "X-Screenpipe-Client": "api", "X-Screenpipe-Agent": "matek-clicky"}
