@@ -190,6 +190,10 @@ class GeminiProvider(BaseLLMProvider):
                             obj = json.loads(data)
                         except json.JSONDecodeError:
                             continue
+                        if obj.get("usageMetadata"):
+                            usage = obj["usageMetadata"]
+                            self.last_usage = (usage.get("promptTokenCount", 0),
+                                               usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0))
                         pf = obj.get("promptFeedback") or {}
                         if pf.get("blockReason"):
                             block_reason = pf["blockReason"]

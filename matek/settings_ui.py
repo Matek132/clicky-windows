@@ -19,8 +19,8 @@ GROUPS = {
 }
 CHOICES = {"mode": ["local", "hybrid", "cloud", "confirm"], "local_provider": ["ollama", "lmstudio"], "activation": ["automatic", "wake", "push"],
            "cloud_provider": ["openai", "claude", "gemini", "copilot"], "escalation": ["ask", "budget", "never"],
-           "speech_policy": ["wake", "full", "summary", "text", "auto"], "verbosity": ["quick", "balanced", "detailed", "research"],
-           "preset": ["balanced", "gaming", "research", "programming", "study", "media"], "memory_backend": ["ram", "screenpipe"]}
+           "speech_policy": ["wake", "full", "summary", "text", "auto", "speech"], "verbosity": ["quick", "balanced", "detailed", "research"],
+           "preset": ["balanced", "gaming", "research", "programming", "study", "media", "offline"], "memory_backend": ["ram", "screenpipe"]}
 
 
 class MatekSettingsDialog(QDialog):
@@ -46,7 +46,11 @@ class MatekSettingsDialog(QDialog):
             form = QFormLayout(page)
             for key in fields:
                 value = raw[key]
-                if key in CHOICES:
+                if key == "speech_voice":
+                    control = QComboBox()
+                    control.addItems([""] + [v.name() for v in manager.speech.tts.availableVoices()] if manager.speech.tts else [""])
+                    control.setCurrentText(str(value))
+                elif key in CHOICES:
                     control = QComboBox()
                     control.addItems(CHOICES[key])
                     control.setCurrentText(str(value))
@@ -69,6 +73,11 @@ class MatekSettingsDialog(QDialog):
             if name == "Voice":
                 voices = manager.speech.tts.availableVoices() if manager.speech.tts else []
                 form.addRow(QLabel("Installed offline voices: " + ", ".join(v.name() for v in voices)))
+            if name == "Intelligence":
+                self.api_key = QLineEdit()
+                self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+                self.api_key.setPlaceholderText("Blank keeps existing key · optional for local mode")
+                form.addRow("Selected cloud provider API key · Windows vault", self.api_key)
             if name == "Privacy / memory":
                 self.memory_key = QLineEdit()
                 self.memory_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -113,12 +122,22 @@ class MatekSettingsDialog(QDialog):
         try:
             settings = Settings(**raw)
             settings.validate()
+            if self.api_key.text():
+                import keyring
+                names = {"openai": "OPENAI_API_KEY", "claude": "ANTHROPIC_API_KEY", "gemini": "GOOGLE_API_KEY"}
+                if settings.cloud_provider in names:
+                    keyring.set_password("MatekClicky", names[settings.cloud_provider], self.api_key.text().strip())
             if self.memory_key.text():
                 Credentials.set("screenpipe:" + settings.screenpipe_url, self.memory_key.text().strip())
             self.manager.apply_settings(settings)
             self.accept()
         except Exception as exc:
             self.status.setText(str(exc) if isinstance(exc, ValueError) else "Settings could not be saved")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        from .security import exclude_capture
+        exclude_capture(self)
 
     def retention(self):
         client = self.manager._memory.external.client

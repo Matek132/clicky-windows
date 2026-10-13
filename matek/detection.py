@@ -53,7 +53,7 @@ class QuestionDetector:
             if match:
                 text = match.group(1)
             text = re.sub(r"^(?:(?:um|uh|so|okay|ok|well)[,\s]+|(?:i was wondering|i wonder|do you know)\s+)+", "", text, flags=re.I)
-            question = bool(re.match(r"^(what|why|who|where|when|how|which|can|could|would|should|is|are|do|does|did|explain|tell me|and|give me|go deeper|continue|summarise|summarize|stop|repeat|say it again|co|czym|jak|dlaczego|kiedy|gdzie|wyjaśnij|powtórz|przestań)\b", text, re.I))
+            question = bool(re.match(r"^(what|why|who|where|when|how|which|can|could|would|should|is|are|do|does|did|explain|tell me|and|give me|go deeper|continue|summarise|summarize|short answer|next|stop|repeat|say it again|co|czym|jak|dlaczego|kiedy|gdzie|wyjaśnij|powtórz|przestań)\b", text, re.I))
             if not question and not match:
                 return None
         if self.clock() - self.last < self.settings.debounce_seconds:

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from contextlib import contextmanager
 import json
+import math
 from pathlib import Path
 import sqlite3
 import sys
@@ -41,10 +42,14 @@ class CostLedger:
 
     def rates(self, settings):
         data = json.loads(Path(self.pricing).read_text(encoding="utf-8"))
-        rate = data["models"].get(settings.model)
+        from urllib.parse import urlparse
+        provider = settings.api_base
+        rate = data.get("providers", {}).get(provider, {}).get(settings.model)
+        if not rate and (provider == "openai" or urlparse(provider).hostname == "api.openai.com"):
+            rate = data["models"].get(settings.model)
         if not rate:
             raise ValueError("No pricing configured for this model. Edit pricing.json before cloud use.")
-        if any(float(rate[k]) < 0 for k in ("input_per_million", "output_per_million", "image_token_bound")):
+        if any(not math.isfinite(float(rate[k])) or float(rate[k]) < 0 for k in ("input_per_million", "output_per_million", "image_token_bound")):
             raise ValueError("Invalid pricing configuration")
         return rate
 

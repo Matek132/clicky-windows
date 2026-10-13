@@ -1,6 +1,7 @@
 import ctypes
 from ctypes import wintypes
 import sys
+import re
 
 
 def windows_api():
@@ -55,6 +56,13 @@ def active_window():
     return window_info(user.GetForegroundWindow())
 
 
+def exclude_capture(widget):
+    if sys.platform == "win32":
+        user = ctypes.windll.user32
+        user.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user.SetWindowDisplayAffinity(int(widget.winId()), 0x11)
+
+
 class PrivacyFilter:
     def __init__(self, exclusions):
         self.terms = [s.strip().casefold() for s in exclusions.split(",") if s.strip()]
@@ -63,6 +71,10 @@ class PrivacyFilter:
     def excluded(self, app, title):
         text = f"{app} {title}".casefold()
         return any(term in text for term in self.terms)
+
+    @staticmethod
+    def sensitive_text(text):
+        return bool(re.search(r"\bsk-[\w-]{20,}|\bBearer\s+[\w.-]{20,}|\b(?:password|api[_ ]?key|secret)\s*[:=]\s*\S+", text, re.I))
 
     def monitor_safe(self, monitor):
         """Block the whole frame if any excluded visible window overlaps the monitor."""

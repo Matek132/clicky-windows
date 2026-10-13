@@ -80,6 +80,8 @@ class SpokenAnswer(QObject):
             text, self.raw_pending = self.raw_pending.split("```", 1)
             if not self.in_code:
                 self._feed_text(text)
+                self._enqueue(self.pending)
+                self.pending = ""
                 self._enqueue("Code is shown on screen.")
             self.in_code = not self.in_code
         if len(self.raw_pending) > 2:

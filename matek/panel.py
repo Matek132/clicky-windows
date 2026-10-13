@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (QApplication, QLabel, QLineEdit, QPushButton, QHBox
                             QSizeGrip, QDialog, QVBoxLayout, QPlainTextEdit, QMessageBox)
 from ui.panel import CompanionPanel, AppState
 from .settings_ui import MatekSettingsDialog
+from .presence import Presence
 
 
 class MatekPanel(CompanionPanel):
@@ -14,6 +15,7 @@ class MatekPanel(CompanionPanel):
         self._expanded = True
         self._full_answer = ""
         super().__init__()
+        self.layout().itemAt(0).layout().insertWidget(0, Presence(self))
         self.setMinimumSize(260, 56)
         self.setMaximumSize(10000, 10000)
         self.resize(430, 460)
@@ -30,6 +32,10 @@ class MatekPanel(CompanionPanel):
         self.caption_label.setWordWrap(True)
         self.caption_label.setTextFormat(Qt.TextFormat.PlainText)
         self.layout().addWidget(self.caption_label)
+        self.sources = QLabel("")
+        self.sources.setOpenExternalLinks(True)
+        self.sources.setWordWrap(True)
+        self.layout().addWidget(self.sources)
         self.entry = QLineEdit()
         self.entry.setStyleSheet("background:#202431;color:#edf0f8;border:1px solid #343d52;border-radius:7px;padding:8px;")
         self.entry.setPlaceholderText("Ask Matek…")
@@ -52,14 +58,19 @@ class MatekPanel(CompanionPanel):
         self.collapse_timer.timeout.connect(self.collapse)
         manager.question_received.connect(self.show_question)
         manager.route_changed.connect(self.show_route)
+        manager.sources_changed.connect(self.show_sources)
         manager.local_status.connect(self._status_label.setText)
         manager.caption.connect(self.show_caption)
         manager.sig_response_done.connect(self.answer_done)
-        manager.suggestion.connect(self._status_label.setText)
+        manager.suggestion.connect(self.show_suggestion)
         manager.confirmation.connect(self.confirm)
         manager.speech_cancel.connect(self.cancel_confirmation)
         self.apply()
         self.collapse()
+        if manager.settings.overlay_x >= 0 and manager.settings.overlay_y >= 0:
+            rect = QApplication.primaryScreen().availableGeometry()
+            self.move(min(manager.settings.overlay_x, rect.right() - self.width()),
+                      min(manager.settings.overlay_y, rect.bottom() - self.height()))
 
     def apply(self):
         settings = self.manager.settings
@@ -110,18 +121,42 @@ class MatekPanel(CompanionPanel):
         super().leaveEvent(event)
 
     def show_question(self, question):
-        self.expand()
-        self.show()
+        if self.manager.settings.speech_policy != "speech":
+            self.expand()
+            self.show()
         self._full_answer = ""
         self.question.setText(question)
+        self.clear_response()
         self.caption_label.clear()
+        self.sources.clear()
 
     def show_route(self, route):
-        self._badge.setText(route.split(" · ")[0])
+        provider = route.split(" · ")[0]
+        self._badge.setText(("Local · " if provider in {"ollama", "lmstudio"} else "Cloud · ") + provider)
         self._badge.setToolTip(route)
 
+    def set_state(self, state):
+        super().set_state(state)
+        if state == AppState.IDLE:
+            settings = self.manager.settings
+            if self.manager.paused:
+                text = "Matek monitoring paused"
+            elif settings.microphone and settings.activation == "automatic":
+                text = "Listening locally · say Matek to speak" if settings.speech_policy == "wake" else "Listening locally"
+            elif settings.microphone and settings.activation == "wake":
+                text = "Say Matek, then your question"
+            else:
+                text = "Ready · Ctrl+Win or type a question"
+            self._status_label.setText(text)
+
+    def show_sources(self, links):
+        from html import escape
+        self.sources.setText(" · ".join(f'<a style="color:#a3c4ff" href="{escape(url, quote=True)}">[{escape(number)}] {escape(title[:45])}</a>'
+                                          for number, title, url in links))
+
     def append_response_chunk(self, chunk):
-        self.expand()
+        if self.manager.settings.speech_policy != "speech":
+            self.expand()
         self._full_answer += chunk
         super().append_response_chunk(chunk)
 
@@ -134,6 +169,18 @@ class MatekPanel(CompanionPanel):
     def answer_done(self, answer):
         self._full_answer = answer
         self.collapse_timer.start(self.manager.settings.answer_display_seconds * 1000)
+
+    def show_suggestion(self, text):
+        self.expand()
+        self.show()
+        self._status_label.setText(text)
+        self.collapse_timer.start(8000)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self.manager.settings.overlay_x = self.x()
+        self.manager.settings.overlay_y = self.y()
+        self.manager.settings.save()
 
     def submit(self):
         question = self.entry.text().strip()

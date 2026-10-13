@@ -31,15 +31,18 @@ class MatekManager(CompanionManager):
     caption = pyqtSignal(str)
     local_status = pyqtSignal(str)
     suggestion = pyqtSignal(str)
+    sources_changed = pyqtSignal(object)
     transcript_received = pyqtSignal(int, object)
     speech_reset = pyqtSignal(object)
-    speech_feed = pyqtSignal(str)
-    speech_finish = pyqtSignal()
+    speech_feed = pyqtSignal(object)
+    speech_finish = pyqtSignal(object)
     speech_cancel = pyqtSignal()
     confirmation = pyqtSignal(object)
+    ui_action = pyqtSignal(object)
 
     def __init__(self, settings=None, runtime=True):
         super().__init__()
+        self.ui_action.connect(lambda action: action())
         self.settings = settings or Settings.load()
         self.settings.validate()
         self.guarded_runtime = True
@@ -61,8 +64,8 @@ class MatekManager(CompanionManager):
         self.speech.speaking_changed.connect(self._speaking)
         self.speech_reset.connect(self._reset_speech)
         self.speech_feed.connect(self._feed_speech)
-        self.speech_finish.connect(self.speech.finish)
-        self.speech_cancel.connect(self.speech.cancel)
+        self.speech_finish.connect(self._finish_speech)
+        self.speech_cancel.connect(self._cancel_speech)
         self.transcript_received.connect(self._transcript)
         self.echo = threading.Event()
         self.echo_tail = QTimer(self)
@@ -76,6 +79,9 @@ class MatekManager(CompanionManager):
         self._answer_busy = False
         self._scheduled = False
         self._speech_wait = None
+        self._active_speech_wait = None
+        self._speech_token = 0
+        self._active_speech_token = -1
         self.armed_until = 0
         self.unfinished = None
         self.pending = None
@@ -122,9 +128,20 @@ class MatekManager(CompanionManager):
         os.environ["CLICKY_ACTIVE_LLM"] = "ollama"
 
     def start(self):
+        if self.settings.preset == "gaming" and self.runtime:
+            asyncio.run_coroutine_threadsafe(self._release_gpu_model(), self._loop)
         if self.runtime and not self.paused:
             self._memory.start()
         self.local_status.emit("Ready · Clicky-based Matek · local monitoring")
+
+    async def _release_gpu_model(self):
+        import httpx
+        try:
+            async with httpx.AsyncClient(trust_env=False, timeout=10) as client:
+                await client.post(self.settings.local_url.rstrip("/") + "/api/generate",
+                                  json={"model": self.settings.local_model, "keep_alive": 0})
+        except Exception:
+            self.local_status.emit("Gaming mode enabled · local model unload unavailable")
 
     def _maintenance(self):
         self._memory.engine.purge()
@@ -138,6 +155,9 @@ class MatekManager(CompanionManager):
 
     def _transcript(self, generation, snippet):
         if generation != self.generation or self.paused:
+            return
+        if snippet.source == "microphone" and snippet.is_final and snippet.confidence >= self.settings.confidence and re.fullmatch(r"\s*(?:matek[, ]+)?(?:stop|cancel|przestań|stop speaking)[.!?\s]*", snippet.text, re.I):
+            self.stop()
             return
         if self.echo.is_set():
             if snippet.source == "microphone" and re.fullmatch(r"\s*(?:matek[, ]+)?(?:stop|cancel|przestań|stop speaking)[.!?\s]*", snippet.text, re.I):
@@ -155,6 +175,11 @@ class MatekManager(CompanionManager):
                 self.local_status.emit("Still listening · finish your question")
             return
         if snippet.source == "microphone":
+            names = [re.escape(x.strip()) for x in self.settings.wake_words.split(",") if x.strip()]
+            if names and snippet.confidence >= self.settings.confidence and re.fullmatch(r"(?:hey\s+)?(?:" + "|".join(names) + r")[.!?\s]*", snippet.text.strip(), re.I):
+                self.armed_until = time.time() + 30
+                self.local_status.emit("Listening · ask your question")
+                return
             if self.unfinished:
                 from .audio import join_transcript
                 snippet = replace(snippet, text=join_transcript(self.unfinished[0], snippet.text))
@@ -169,7 +194,7 @@ class MatekManager(CompanionManager):
         question = self.detector.detect(snippet.text, snippet.source, snippet.confidence, manual)
         if question:
             self.armed_until = 0
-            self.submit_question(question, snippet.source, self.detector.addressed(snippet.text))
+            self.submit_question(question, snippet.source, manual or self.detector.addressed(snippet.text))
 
     def submit_question(self, question, source="typed", addressed=False):
         question = question.strip()
@@ -185,6 +210,16 @@ class MatekManager(CompanionManager):
             return
         self._scheduled = True
         self._current_task = asyncio.run_coroutine_threadsafe(self.ask(question, source, addressed), self._loop)
+        future = self._current_task
+        def completed(_):
+            def dispatch():
+                if self._current_task is future and not self._answer_busy:
+                    self._scheduled = False
+                    pending, self.pending = self.pending, None
+                    if pending and not self.paused:
+                        self.submit_question(*pending)
+            self.ui_action.emit(dispatch)
+        future.add_done_callback(completed)
 
     async def ask(self, question, source="typed", addressed=False):
         self._scheduled = False
@@ -197,6 +232,8 @@ class MatekManager(CompanionManager):
         self._answer_busy = True
         self._cancel_flag = False
         self._speech_wait = asyncio.get_running_loop().create_future()
+        self._speech_token += 1
+        token = self._speech_token
         try:
             self.controller.admit_question(question)
             self.route = self.router.select(question, self.settings)
@@ -204,13 +241,15 @@ class MatekManager(CompanionManager):
                 answer = self._last_response
                 if "last sentence" in question:
                     answer = re.split(r"(?<=[.!?])\s+", answer.strip())[-1]
-                self.speech_reset.emit(replace(self.settings, speech_output=self.settings.speech_output and self.settings.speech_policy != "text"))
+                self.question_received.emit(question)
+                self.speech_reset.emit((replace(self.settings, speech_output=self.settings.speech_output and self.settings.speech_policy != "text"), self._speech_wait, token))
                 self.sig_response_chunk.emit(answer)
-                self.speech_feed.emit(answer)
-                self.speech_finish.emit()
+                self.sig_response_done.emit(answer)
+                self.speech_feed.emit((token, answer))
+                self.speech_finish.emit(token)
                 await asyncio.wait_for(self._speech_wait, 120)
                 return
-            self.scope = SimpleNamespace(question=question, started=time.time(), spent_estimate=0.0, answer="")
+            self.scope = SimpleNamespace(question=question, started=time.time(), spent_estimate=0.0, answer="", speech_token=token)
             self.local_model_override = self.settings.local_model if self.route.intent.screen and self.settings.local_vision else self.settings.local_text_model or self.settings.local_model
             self._current_model = self.settings.model if self.route.provider not in {"ollama", "lmstudio"} else self.local_model_override
             self._web_search_enabled = self.route.web
@@ -218,9 +257,11 @@ class MatekManager(CompanionManager):
             self.question_received.emit(question)
             self.route_changed.emit(self.route.provider + (" · " + self.route.note if self.route.note else ""))
             voice = self.settings.speech_output and self.settings.speech_policy != "text" and (self.settings.speech_policy != "wake" or addressed)
-            self.speech_reset.emit(replace(self.settings, speech_output=voice))
+            self.speech_reset.emit((replace(self.settings, speech_output=voice), self._speech_wait, token))
             # Shared Clicky orchestration owns pointing, drawings, provider dispatch and reply display.
             await self._answer_question(question, audio_seconds=1 if source == "microphone" else 0)
+            if not self.scope.answer and not self._cancel_flag:
+                self.speech_cancel.emit()
             if self.scope.answer and not self._cancel_flag:
                 self._memory.engine.add_turn(question, self.scope.answer)
                 if self.settings.persistent_history:
@@ -232,7 +273,10 @@ class MatekManager(CompanionManager):
             logging.getLogger("matek").warning("question_failure type=%s", type(exc).__name__)
             self.sig_error.emit(str(exc) if isinstance(exc, (PermissionError, ValueError)) else "Question failed · check local model and settings")
         finally:
+            if self._speech_wait and not self._speech_wait.done():
+                self._speech_wait.cancel()
             self.scope = None
+            self._scheduled = False
             self._answer_busy = False
             self._emit_state(AppState.IDLE)
             pending, self.pending = self.pending, None
@@ -247,6 +291,10 @@ class MatekManager(CompanionManager):
         kind = classify(question)
         return kind.screen, kind.audio
 
+    def _search_evidence(self, results):
+        links = re.findall(r"\[(\d+)\]\s*([^\n]+?)\s*[—-]\s*(https?://\S+)", results)
+        self.sources_changed.emit(links[:3])
+
     def _capture_screens(self):
         if self.paused or not (self.settings.continuous_screen or self.settings.manual_screenshots):
             return []
@@ -254,12 +302,12 @@ class MatekManager(CompanionManager):
         import mss
         privacy = PrivacyFilter(self.settings.exclusions)
         with mss.mss() as probe:
-            if not all(privacy.monitor_safe(m) for m in probe.monitors[1:]):
+            if self.settings.monitor >= len(probe.monitors) or not privacy.monitor_safe(probe.monitors[self.settings.monitor]):
                 self._memory.engine.clear()
                 return []
-        shots = capture_all_screens(self.settings.image_max_side)
+        shots = capture_all_screens(self.settings.image_max_side, self.settings.monitor)
         with mss.mss() as probe:
-            if not all(privacy.monitor_safe(m) for m in probe.monitors[1:]):
+            if self.settings.monitor >= len(probe.monitors) or not privacy.monitor_safe(probe.monitors[self.settings.monitor]):
                 return []
         from .security import active_window
         app, title = active_window()
@@ -275,6 +323,8 @@ class MatekManager(CompanionManager):
         style = "One short direct sentence, at most 25 words; essential steps only." if self.settings.verbosity == "quick" else "Explain clearly with useful examples; answer first."
         if re.search(r"in depth|go deeper|research|compare|three examples|dokładnie", question, re.I):
             style = "Give a thoughtful, structured explanation with examples and acknowledge uncertainty."
+        if re.search(r"short answer|briefly|krótko", question, re.I):
+            style = "One short direct sentence, at most 25 words."
         language = "Prefer British English." if self.settings.language != "pl" else "Odpowiedz po polsku."
         if self.settings.response_language == "pl" or re.search(r"\b(polish|co|czym|jak|dlaczego|wyjaśnij|jest|po polsku)\b", question, re.I):
             language = "Odpowiedz po polsku."
@@ -288,6 +338,8 @@ class MatekManager(CompanionManager):
             prompt += _TECHNICAL_RULES + "\nDraw or point only on fresh current screenshots, not historical frames.\n"
             if kwargs.get("detected_coord"):
                 prompt += f"Detected current target: {kwargs['detected_coord']}\n"
+        if kind.current and not self._web_search_enabled:
+            prompt += "\nLive research is disabled. Tell the user you cannot verify the latest facts; do not present changing information as current.\n"
         prompt += kwargs.get("extra", "")
         if self._quiz_mode:
             prompt += "\nQuiz mode: ask one useful question, then wait for the user's answer. Evaluate their next answer briefly and ask the next question.\n"
@@ -315,42 +367,67 @@ class MatekManager(CompanionManager):
         return self._providers[name]
 
     async def _play_lesson(self, full_response, clean):
-        self.speech_finish.emit()
+        self.speech_finish.emit(self._speech_token)
         await asyncio.wait_for(self._speech_wait, 180)
 
     def _get_tts(self):
         manager = self
         class OfflineVoice:
             async def speak(self, text):
-                manager.speech_feed.emit(text)
-                manager.speech_finish.emit()
+                manager.speech_feed.emit((manager._speech_token, text))
+                manager.speech_finish.emit(manager._speech_token)
                 if manager._speech_wait:
                     await manager._speech_wait
             def stop(self):
                 manager.speech_cancel.emit()
         return OfflineVoice()
 
-    def _reset_speech(self, settings):
+    def _reset_speech(self, request):
+        settings, future, token = request
+        if future.done():
+            return
         self.speech.cancel()
+        self._active_speech_wait = future
+        self._active_speech_token = token
         self.speech.configure(settings)
         self._summary_words = 0
+        self._summary_pending = ""
+
+    def _cancel_speech(self):
+        self._active_speech_token = -1
+        self.speech.cancel()
 
     def set_quiz_mode(self, enabled):
         self._quiz_mode = enabled
         if enabled:
             self.submit_question("Ask one quiz question about the current screen")
 
-    def _feed_speech(self, chunk):
-        if self.settings.speech_policy in {"summary", "auto"} and self.speech.settings.speech_output:
-            words = chunk.split()
-            if self._summary_words >= 40:
-                return
-            chunk = " ".join(words[:40 - self._summary_words]) + " "
-            self._summary_words += len(words)
-        self.speech.feed(chunk)
+    def _feed_speech(self, request):
+        token, chunk = request
+        if token != self._active_speech_token:
+            return
+        if self.speech.settings.speech_policy in {"summary", "auto"} and self.speech.settings.speech_output:
+            self._summary_pending += chunk
+            # Emit complete words, never model token fragments.
+            while match := re.match(r"\s*\S+\s+", self._summary_pending):
+                word = match.group(0)
+                self._summary_pending = self._summary_pending[match.end():]
+                if self._summary_words < 40:
+                    self.speech.feed(word)
+                    self._summary_words += 1
+        else:
+            self.speech.feed(chunk)
+
+    def _finish_speech(self, token):
+        if token != self._active_speech_token:
+            return
+        if self._summary_pending and self._summary_words < 40:
+            self.speech.feed(self._summary_pending)
+        self._summary_pending = ""
+        self.speech.finish()
 
     def _speech_done(self):
-        future = self._speech_wait
+        future = self._active_speech_wait
         if future and not future.done():
             future.get_loop().call_soon_threadsafe(lambda: future.set_result(True) if not future.done() else None)
 
@@ -382,6 +459,7 @@ class MatekManager(CompanionManager):
 
     def stop(self, clear_pending=True):
         self._cancel_flag = True
+        self._scheduled = False
         if clear_pending:
             self.pending = None
             self.unfinished = None
@@ -409,7 +487,9 @@ class MatekManager(CompanionManager):
         self.settings = settings
         old, self._providers = self._providers, {}
         async def close_old():
-            while self._answer_busy:
+            for _ in range(30):
+                if not self._answer_busy:
+                    break
                 await asyncio.sleep(.1)
             for provider in old.values():
                 await provider.close()

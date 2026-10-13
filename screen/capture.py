@@ -65,7 +65,7 @@ def _query_dpi_scale() -> float:
         return 1.0
 
 
-def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
+def capture_all_screens(max_width: int = 1280, monitor_index: int | None = None) -> List[ScreenShot]:
     """Capture all monitors. Each ScreenShot carries everything needed
     to convert detection coords back into logical screen space."""
     dpi = _query_dpi_scale()
@@ -73,6 +73,8 @@ def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
     with mss.mss() as sct:
         # mss monitor index 0 is the combined virtual screen; 1+ are real monitors
         for i, monitor in enumerate(sct.monitors[1:], start=1):
+            if monitor_index is not None and i != monitor_index:
+                continue
             raw = sct.grab(monitor)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 

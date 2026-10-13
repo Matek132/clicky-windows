@@ -31,14 +31,22 @@ class GuardedProvider(BaseLLMProvider):
         if scope is None or time.time() - scope.started > 120 or manager._cancel_flag:
             raise PermissionError("No active authorized question")
         remote = self.name not in {"ollama", "lmstudio"}
+        main_answer = kwargs.get("user_text") == scope.question
+        if main_answer:
+            kwargs["history"] = kwargs.get("history", [])[-12:] if manager.route.intent.followup else []
         if remote and (not manager.settings.cloud_access or manager.settings.mode == "local"):
             raise PermissionError("Cloud access disabled")
         token_bound = max(4096, manager.settings.max_output_tokens)
         cfg = replace(manager.settings, model=kwargs.get("model") or manager.settings.model,
                       api_base=self.name, max_output_tokens=token_bound)
+        if self.name == "openai" and manager.settings.api_base.rstrip("/") != "https://api.openai.com/v1":
+            cfg = replace(cfg, api_base=manager.settings.api_base)
         reservation = None
         rate = None
         if remote:
+            from .security import PrivacyFilter
+            if PrivacyFilter.sensitive_text(kwargs.get("user_text", "")) or any(PrivacyFilter.sensitive_text(m.content) for m in kwargs.get("history", [])):
+                raise PermissionError("Sensitive credential text detected · use Local Only or remove it before a cloud request")
             from json import dumps
             package = SimpleNamespace(text=lambda: dumps({key: value for key, value in kwargs.items() if key != "screenshots_b64"}, default=str),
                                       conversation=(), frames=kwargs.get("screenshots_b64", []))
@@ -54,7 +62,6 @@ class GuardedProvider(BaseLLMProvider):
             reservation = manager.ledger.reserve(estimate, cfg)
             scope.spent_estimate += estimate
         kwargs["model"] = cfg.model if remote else manager.local_model_override if self.name == "ollama" else None
-        main_answer = kwargs.get("user_text") == scope.question
         if not remote and not manager.settings.local_vision:
             kwargs["screenshots_b64"] = []
         answer = []
@@ -65,7 +72,7 @@ class GuardedProvider(BaseLLMProvider):
                     raise asyncio.CancelledError()
                 if main_answer:
                     answer.append(chunk)
-                    manager.speech_feed.emit(chunk)
+                    manager.speech_feed.emit((scope.speech_token, chunk))
                 yield chunk
             if reservation:
                 usage = getattr(self.provider, "last_usage", None)

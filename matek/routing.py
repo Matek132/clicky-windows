@@ -16,12 +16,12 @@ class Intent:
 def classify(text):
     screen = bool(re.search(r"\b(screen|button|symbol|notification|dialog|disappear|visible|window|this code|this error|that drawing|this equation|my drawing|ekran|symbol|przycisk)\b", text, re.I))
     screen = screen or bool(re.search(r"\bdisappear\w*\b|\b(?:this|that|my)\s+(?:(?:Unity|Unreal|Python|Minecraft)\s+)?(?:code|algorithm|drawing|equation|error|symbol|button|block|game|program)\b", text, re.I))
-    temporal = bool(re.search(r"\b(happened|changed|disappear|notification|before|ago|yesterday|wcześniej|znikn|stało)\b", text, re.I))
+    temporal = bool(re.search(r"\b(happened|changed|disappear\w*|notification|before|ago|yesterday|wcześniej|znikn\w*|stało)\b", text, re.I))
     audio = bool(re.search(r"\b(lecturer|speaker|he mean|she mean|said|audio|lecture|video|narrator|powiedział|wykład)\b", text, re.I))
-    followup = bool(re.search(r"^(and |why is that important|how would that|explain that|give me an example|go deeper|continue|summari|a jak|wyjaśnij to)", text, re.I))
+    followup = bool(re.search(r"^(and |why is that|how would that|how does that|what about|explain that|explain it|give me an example|give me three examples|go deeper|continue|summari|short answer|a jak|wyjaśnij to)", text, re.I))
     current = bool(re.search(r"\b(latest|currently|news|update|current|today|najnowsz|aktualn|dzisiaj)\b", text, re.I))
     complex_q = bool(re.search(r"\b(prove|derive|advanced|deeply|algorithm|analyse|analyze|research|in depth|dokładnie|udowodnij)\b", text, re.I))
-    if re.search(r"\b(what happened to that|why did that|what does that symbol|what does this)\b", text, re.I):
+    if re.search(r"\b(what happened to that|why did that|what does that symbol|what does this|what is this|what is that|what am i looking at|read this|look at this)\b", text, re.I):
         screen = True
     return Intent(screen, temporal and (screen or audio), audio, followup, current, complex_q)
 
@@ -41,9 +41,9 @@ class ReasoningRouter:
         local_override = bool(re.search(r"\b(answer locally|local only|don't use cloud|odpowiedz lokalnie)\b", question, re.I))
         cloud_override = bool(re.search(r"\b(use cloud|cloud ai|użyj chmury)\b", question, re.I))
         no_web = bool(re.search(r"\b(don.t use the internet|no internet|offline|bez internetu)\b", question, re.I))
-        web = settings.web_access and kind.current and not no_web
+        web = settings.web_access and (kind.current or bool(re.search(r"search|look up|research|sprawdź", question, re.I))) and not no_web and settings.preset != "offline"
         wants_cloud = cloud_override or settings.mode in {"cloud", "confirm"} or (settings.mode == "hybrid" and (kind.complex or settings.preset == "gaming"))
-        if local_override or settings.mode == "local" or not settings.cloud_access or not wants_cloud:
+        if local_override or settings.preset == "offline" or settings.mode == "local" or not settings.cloud_access or not wants_cloud:
             note = "A stronger cloud model may help; cloud escalation is disabled." if kind.complex else ""
             return Route(settings.local_provider, kind, note=note, web=web)
         if settings.escalation == "never" and not cloud_override and settings.mode != "confirm":

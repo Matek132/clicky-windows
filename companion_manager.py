@@ -771,7 +771,7 @@ class CompanionManager(QObject):
                 _log.info(
                     "ignoring %r as a voice command — %.1fs of audio is too "
                     "long for one; treating it as a question",
-                    transcript[:40], audio_seconds,
+                    "voice command", audio_seconds,
                 )
 
             if command_plausible and is_next(transcript) and self._lesson_steps:
@@ -841,6 +841,8 @@ class CompanionManager(QObject):
                     images_b64 = list(dict.fromkeys(memory.images + images_b64))
                     if len(images_b64) > 3:
                         images_b64 = [images_b64[0]] + images_b64[-2:]
+            if images_b64:
+                memory = type(memory)(memory.backend, memory.records, memory.note.replace(" No permitted screenshot is available; do not claim to see the screen.", ""))
             # Fresh question → wipe the previous lesson's drawings and remember
             # this turn's screenshots for coordinate mapping.
             self._screens_ctx = screenshots
@@ -950,6 +952,8 @@ class CompanionManager(QObject):
                     search_results = await search_task or ""
                 except Exception:
                     search_results = ""
+                if hasattr(self, "_search_evidence"):
+                    self._search_evidence(search_results)
 
             detected = None
             detected_coord = None
@@ -1026,7 +1030,8 @@ class CompanionManager(QObject):
             # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
             full_response = ""
             display_buf = ""
-            self._cancel_flag = False
+            if not getattr(self, "guarded_runtime", False):
+                self._cancel_flag = False
             async for chunk in self._get_llm().stream_response(
                 user_text=transcript,
                 screenshots_b64=images_b64,
@@ -1123,7 +1128,7 @@ class CompanionManager(QObject):
             # "'NoneType' object has no attribute 'write'" with no way to
             # tell which call produced it.
             _log.warning("request_failure type=%s", type(e).__name__)
-            self.sig_error.emit(str(e))
+            self.sig_error.emit(str(e) if isinstance(e, (PermissionError, ValueError)) else "Question failed · check local model and settings")
 
         finally:
             if pointing_held:

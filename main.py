@@ -138,6 +138,12 @@ def _setup_logging():
         handler.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
         ))
+        class LocalEventFilter(logging.Filter):
+            def filter(self, record):
+                # Store only fixed event names/type metadata. HTTP URLs can
+                # contain a question; exception bodies can contain credentials.
+                return str(record.msg).startswith(("=== Clicky starting", "question_failure type=", "request_failure type=", "transcription_failure type="))
+        handler.addFilter(LocalEventFilter())
         root = logging.getLogger()
         root.setLevel(logging.INFO)
         root.addHandler(handler)
@@ -149,7 +155,27 @@ def _setup_logging():
 
 
 def main():
+    if "--output" in sys.argv:
+        index = sys.argv.index("--output") + 1
+        sys.argv[index] = str(Path(sys.argv[index]).resolve())
     os.chdir(Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent)
+    if "--gpu-workload" in sys.argv:
+        from matek.diagnostics import run_gpu
+        return run_gpu(int(sys.argv[sys.argv.index("--seconds") + 1]), Path(sys.argv[sys.argv.index("--output") + 1]))
+    if "--native-check" in sys.argv or "--benchmark" in sys.argv:
+        from matek.diagnostics import run
+        return run(sys.argv[1:])
+    mutex = None
+    if sys.platform == "win32" and "--smoke-test" not in sys.argv:
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel.CreateMutexW.restype = ctypes.c_void_p
+        mutex = kernel.CreateMutexW(None, False, "Local\\MatekScreenCompanion")
+        if ctypes.get_last_error() == 183:
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel.CloseHandle(mutex)
+            return
     if "--smoke-test" in sys.argv:
         import tempfile
         smoke_directory = tempfile.TemporaryDirectory(prefix="matek-clicky-smoke-")
@@ -161,6 +187,7 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Matek Screen Companion")
+    app.setApplicationVersion("0.4.0")
     app.setApplicationDisplayName("Matek Screen Companion · Clicky Windows")
 
     # ── Core components ───────────────────────────────────────────────────────
@@ -468,17 +495,18 @@ def main():
 
     # ── Global hotkey ─────────────────────────────────────────────────────────
     hotkey = GlobalHotkeyMonitor(
-        on_press=manager.on_hotkey_press,
-        on_release=manager.on_hotkey_release,
+        on_press=lambda: manager.ui_action.emit(manager.on_hotkey_press),
+        on_release=lambda: manager.ui_action.emit(manager.on_hotkey_release),
     )
     hotkey.start()
 
     # Esc = cancel current generation (kills Ollama ramble mid-stream)
-    stop_key = StopHotkey(on_stop=manager.stop, key="esc")
+    stop_key = StopHotkey(on_stop=lambda: manager.ui_action.emit(manager.stop), key="esc")
     stop_key.start()
     import keyboard
-    keyboard.add_hotkey("ctrl+alt+p", manager.pause)
-    keyboard.add_hotkey("ctrl+alt+o", panel.show)
+    keyboard.add_hotkey("ctrl+alt+p", lambda: manager.ui_action.emit(manager.pause))
+    keyboard.add_hotkey("ctrl+alt+o", lambda: manager.ui_action.emit(panel.show))
+    app.aboutToQuit.connect(hotkey.stop)
 
     # ── Show UI + start listener ──────────────────────────────────────────────
     cursor_preferences()

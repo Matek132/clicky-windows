@@ -82,6 +82,8 @@ class ContextEngine:
 
     def add_transcript(self, snippet):
         with self.lock:
+            if PrivacyFilter.sensitive_text(snippet.text):
+                return
             if snippet.session:
                 self.transcripts = deque((t for t in self.transcripts
                     if not (t.source == snippet.source and t.session == snippet.session)), maxlen=100)
@@ -113,7 +115,8 @@ class ContextEngine:
             # Historical frames require continued screen permission at dispatch time.
             if not (self.settings.continuous_screen or self.settings.manual_screenshots):
                 frames = []
-            temporal = bool(re.search(r"\b(happened|changed|disappear|before|notification|just|different)\b", question, re.I))
+            from .routing import classify
+            temporal = classify(question).temporal
             selected = frames[-1:] if frames else []
             if temporal and len(frames) > 1 and self.settings.max_request_images > 1:
                 earlier = frames[:-1]

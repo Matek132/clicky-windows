@@ -49,10 +49,10 @@ class Settings:
     echo_guard: bool = True
     allow_voice_commands_during_speech: bool = True
     answer_display_seconds: int = 18
-    whisper_model: str = "models/whisper-tiny.en"
+    whisper_model: str = "models/whisper-base"
     whisper_device: str = "cpu"
     whisper_threads: int = 2
-    language: str = "en"
+    language: str = ""
     monitor: int = 1
     capture_seconds: float = 5.0
     retention_seconds: int = 120
@@ -105,10 +105,10 @@ class Settings:
             if not valid or (isinstance(value, (int, float)) and not math.isfinite(value)):
                 raise ValueError(f"Invalid value for {entry.name}")
         choices = {"mode": {"hybrid", "cloud", "confirm", "local"}, "local_provider": {"ollama", "lmstudio"}, "cloud_provider": {"openai", "claude", "gemini", "copilot", "lmstudio"},
-                   "escalation": {"ask", "budget", "never"}, "speech_policy": {"wake", "full", "summary", "text", "auto"},
+                   "escalation": {"ask", "budget", "never"}, "speech_policy": {"wake", "full", "summary", "text", "auto", "speech"},
                    "memory_backend": {"ram", "screenpipe"}, "activation": {"push", "wake", "automatic"},
                    "verbosity": {"quick", "balanced", "detailed", "research"},
-                   "preset": {"balanced", "gaming", "programming", "study", "research", "media"},
+                   "preset": {"balanced", "gaming", "programming", "study", "research", "media", "offline"},
                    "whisper_device": {"cpu", "cuda"}}
         for name, options in choices.items():
             if getattr(self, name) not in options:

@@ -36,6 +36,7 @@ from typing import AsyncIterator, List, Optional
 import httpx
 
 from ai.base_provider import BaseLLMProvider, Message
+from config import cfg
 
 
 VSCODE_CLIENT_ID = "Iv1.b507a08c87ecfe98"   # Public VS Code Copilot client id
@@ -84,6 +85,8 @@ def _login_log_path() -> Path:
 def _log_login(line: str) -> None:
     """Append a timestamped line to the login log so we can debug failures
     after the fact (the user can grab this from %LOCALAPPDATA%\\Clicky\\)."""
+    if getattr(cfg, "matek_guarded", False):
+        return
     try:
         from datetime import datetime
         with open(_login_log_path(), "a", encoding="utf-8") as f:
@@ -163,7 +166,11 @@ async def device_login(open_browser: bool = True,
             body = r.json()
             if "access_token" in body:
                 token = body["access_token"]
-                _token_path().write_text(json.dumps({"access_token": token}))
+                if getattr(cfg, "matek_guarded", False):
+                    import keyring
+                    keyring.set_password("MatekClicky", "GITHUB_OAUTH_TOKEN", token)
+                else:
+                    _token_path().write_text(json.dumps({"access_token": token}))
                 _log_login(f"✅ Signed in after {poll_count} polls. Token saved.")
                 print("✅  Signed in. Token saved to", _token_path())
                 # Eagerly fetch the model list so the panel reflects what
@@ -193,6 +200,11 @@ async def device_login(open_browser: bool = True,
 
 
 def load_github_token() -> Optional[str]:
+    if getattr(cfg, "matek_guarded", False):
+        import keyring
+        stored = keyring.get_password("MatekClicky", "GITHUB_OAUTH_TOKEN")
+        if stored:
+            return stored
     p = _token_path()
     if not p.exists():
         return None
@@ -437,7 +449,7 @@ async def refresh_models_to_cache(verify: bool = True) -> list[dict]:
     flat = [_normalise_model(m) for m in raw if m.get("id")]
     usable = _usable_models(flat)
 
-    if verify and usable:
+    if verify and usable and not getattr(cfg, "matek_guarded", False):
         verified = await _verify_models(usable)
         # If every probe failed the network is probably down — trust the
         # catalogue rather than caching nothing.
@@ -676,12 +688,12 @@ class GitHubCopilotProvider(BaseLLMProvider):
                 body["max_tokens"] = MAX_TOKENS
                 body["temperature"] = 0.7
 
-            for _attempt in range(3):
+            for _attempt in range(1 if getattr(cfg, "matek_guarded", False) else 3):
               async with client.stream("POST", COPILOT_CHAT_URL, json=body, headers=headers) as r:
                 if r.status_code >= 400:
                     err = await r.aread()
                     snippet = (err.decode("utf-8", "replace") or "")[:400]
-                    if r.status_code == 400 and _attempt < 2 and _adapt_body(body, snippet):
+                    if r.status_code == 400 and not getattr(cfg, "matek_guarded", False) and _attempt < 2 and _adapt_body(body, snippet):
                         continue
                     if r.status_code == 400 and "model" in snippet.lower():
                         raise RuntimeError(

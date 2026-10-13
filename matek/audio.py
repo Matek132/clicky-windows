@@ -32,6 +32,7 @@ class SpeechSegmenter:
         self.pre = deque(maxlen=10)
         self.frames = []
         self.voiced = 0
+        self.utterance_voiced = 0
         self.silence = 0
         self.end_frames = round(end_pause / .03)
         self.max_question_frames = round(max_question_seconds / .03)
@@ -64,6 +65,7 @@ class SpeechSegmenter:
                     self.silence = 0
                     self.active = True
                     self.total_frames = len(self.frames)
+                    self.utterance_voiced = self.voiced
                     self.session += 1
                     self.truncated = False
             else:
@@ -71,10 +73,14 @@ class SpeechSegmenter:
             return None
         self.frames.append(pcm)
         self.total_frames += 1
+        self.utterance_voiced += int(voice)
         self.silence = 0 if voice else self.silence + 1
         if self.silence >= self.end_frames or self.total_frames >= self.max_question_frames or len(self.frames) >= 500:
-            result = b"".join(self.frames)
             self.is_final = self.silence >= self.end_frames or self.total_frames >= self.max_question_frames
+            # Waiting for a thinking pause does not require transcribing all of
+            # its trailing silence. Ignore very short acoustic clicks entirely.
+            retained = self.frames[:max(1, len(self.frames) - max(0, self.silence - 10))] if self.is_final else self.frames
+            result = b"".join(retained) if self.utterance_voiced >= 5 else None
             self.truncated = self.total_frames >= self.max_question_frames and self.silence < self.end_frames
             # Overlap protects words crossing a chunk boundary. This is not a final-question event.
             self.frames = [] if self.is_final else self.frames[-10:]
@@ -164,6 +170,8 @@ class AudioService:
         self.segments = queue.Queue(maxsize=4)
         self.threads = []
         self.transcriber = Transcriber(settings)
+        self.transcriptions = 0
+        self.transcription_seconds = 0.0
         self.on_activity = on_activity or (lambda source, active: None)
         self.suppression = suppression or threading.Event()
         self.dropped_sessions = deque(maxlen=32)
@@ -276,7 +284,10 @@ class AudioService:
                 if key in self.dropped_sessions:
                     pending.pop(key, None)
                     continue
+                started = time.monotonic()
                 snippet = self.transcriber.transcribe(pcm, source, at)
+                self.transcriptions += 1
+                self.transcription_seconds += time.monotonic() - started
                 if self.suppression.is_set() and (source == "system" or not getattr(self.settings, "allow_voice_commands_during_speech", False)):
                     pending.clear()
                     continue
